@@ -1,4 +1,4 @@
-import { AnimationMixer, LoopOnce } from 'three';
+import { AnimationMixer, LoopOnce, Vector3 } from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
 const assets = new Map();
@@ -21,6 +21,8 @@ export function attachScout(actor, asset) {
   model.traverse(part => { if (part.isMesh) part.castShadow = true; });
   actor.visual.clear();
   actor.visual.add(model);
+  actor.hips = model.getObjectByName('Hips');
+  actor.cableOrigin = new Vector3();
   actor.mixer = new AnimationMixer(model);
   actor.actions = Object.fromEntries(asset.animations.map(clip => {
     const action = actor.mixer.clipAction(clip);

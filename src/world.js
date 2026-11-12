@@ -625,10 +625,17 @@ export class CityWorld {
       const x = end.x - actor.root.position.x;
       const y = end.y - actor.root.position.y;
       const z = end.z - actor.root.position.z;
-      const grip = side * .38;
+      const origin = actor.cableOrigin;
+      if (actor.hips) {
+        origin.set(-side * .25, .02, 0);
+        actor.root.worldToLocal(actor.hips.localToWorld(origin));
+      }
+      const startX = origin?.x ?? side * .38;
+      const startY = origin?.y ?? 1.32;
+      const startZ = origin?.z ?? 0;
       const positions = actor.cable.geometry.attributes.position;
-      positions.setXYZ(0, grip, 1.32, 0);
-      positions.setXYZ(1, (x + grip) / 2, (y + 1.32) / 2 - .13, z / 2);
+      positions.setXYZ(0, startX, startY, startZ);
+      positions.setXYZ(1, (x + startX) / 2, (y + startY) / 2 - .13, (z + startZ) / 2);
       positions.setXYZ(2, x, y, z);
       positions.needsUpdate = true;
     }
