@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { SEGMENT_LENGTH, characterFor, getSegment, hash } from '../shared/game.js';
 
+import { attachScout, loadModel, playScout } from './scout-motion.js';
+
 const clamp = THREE.MathUtils.clamp;
 
 function cobbleTexture() {
@@ -118,6 +120,15 @@ export class CityWorld {
     this.makeMaterials();
     this.makeLighting();
     this.makeStreet();
+    loadModel('Trost_Street').then(({ scene }) => {
+      this.trost = scene;
+      // Use the existing cobblestone road throughout the city.
+      this.trost.getObjectByName('road')?.removeFromParent();
+      this.trost.traverse(part => {
+        if (part.isMesh) part.castShadow = part.receiveShadow = true;
+      });
+      this.chunkSeed = undefined;
+    }).catch(error => console.warn('Trost street unavailable', error));
     this.localActor = this.makeScout('eren', 'You', false);
     this.scene.add(this.localActor.root);
     this.titan = this.makeTitan();
@@ -268,58 +279,77 @@ export class CityWorld {
     this.clearGroup(group);
     group.position.z = -index * SEGMENT_LENGTH;
     group.userData.pickups = [];
-    for (const side of [-1, 1]) {
-      this.box(group, 'wall', side * 25.5, 11.5, -22, 4, 23, 44);
-      for (let z = -2; z > -44; z -= 5) this.box(group, 'wall', side * 25.5, 23.7, z, 4.8, 1.5, 2.7);
-      for (let building = 0; building < 2; building += 1) {
-        const random = hash(seed, index, building + (side === 1 ? 60 : 30));
-        const width = 6.5 + random * 3;
-        const height = 8.5 + hash(seed, index, building + 75 + side) * 9;
-        const depth = 19.5;
-        const z = -11 - building * 22;
-        const x = side * (11.6 + width / 2);
-        const wall = this.materials.walls[Math.floor(random * this.materials.walls.length)];
-        this.box(group, wall, x, height / 2, z, width, height, depth, true);
-        this.box(group, 'stone', side * 11.52, 0.6, z, 0.24, 1.2, depth);
-        const roof = this.mesh(this.geometry.roof, this.materials.roofs[Math.floor(hash(seed, index, building + 95) * 4)], group, x, height, z, width + 0.9, 4.4, depth + 1, true);
-        roof.rotation.y = building % 2 && random > 0.5 ? Math.PI / 2 : 0;
-        this.box(group, 'wood', side * 11.47, height - 0.15, z, 0.22, 0.28, depth + 0.15);
-        for (let floor = 0; floor < Math.floor((height - 1.8) / 3); floor += 1) {
-          const y = 3.1 + floor * 3;
-          this.box(group, 'wood', side * 11.48, y - 1.2, z, 0.18, 0.16, depth);
-          for (const windowZ of [-6, 0, 6]) {
-            this.box(group, 'wood', side * 11.45, y, z + windowZ, 0.18, 1.5, 1.1);
-            this.box(group, 'glass', side * 11.33, y, z + windowZ, 0.12, 1.22, 0.81);
-            this.box(group, 'woodLight', side * 11.22, y, z + windowZ, 0.12, 1.27, 0.07);
-            this.box(group, 'woodLight', side * 11.22, y, z + windowZ, 0.12, 0.07, 0.84);
+    group.userData.anchors = [];
+    let district;
+    if (this.trost && index % 4 < 2) {
+      district = this.trost.clone(true);
+      district.scale.set(1.72, 1.12, SEGMENT_LENGTH / 48);
+      district.position.z = -SEGMENT_LENGTH / 2;
+      district.updateMatrix();
+      district.traverse(part => {
+        if (part.name.startsWith('Anchor_')) {
+          const point = part.getWorldPosition(new THREE.Vector3());
+          point.z += group.position.z;
+          group.userData.anchors.push(point);
+        }
+      });
+    } else {
+      for (const side of [-1, 1]) {
+        this.box(group, 'wall', side * 25.5, 11.5, -22, 4, 23, 44);
+        for (let z = -2; z > -44; z -= 5) this.box(group, 'wall', side * 25.5, 23.7, z, 4.8, 1.5, 2.7);
+        for (let building = 0; building < 2; building += 1) {
+          const random = hash(seed, index, building + (side === 1 ? 60 : 30));
+          const width = 6.5 + random * 3;
+          const height = 8.5 + hash(seed, index, building + 75 + side) * 9;
+          const depth = 19.5;
+          const z = -11 - building * 22;
+          const x = side * (11.6 + width / 2);
+          const bracket = new THREE.Vector3(side * 11.2, height - .8, z);
+          this.box(group, 'gold', bracket.x, bracket.y, z, .75, .24, .46);
+          group.userData.anchors.push(new THREE.Vector3(bracket.x, bracket.y, z + group.position.z));
+          const wall = this.materials.walls[Math.floor(random * this.materials.walls.length)];
+          this.box(group, wall, x, height / 2, z, width, height, depth, true);
+          this.box(group, 'stone', side * 11.52, 0.6, z, 0.24, 1.2, depth);
+          const roof = this.mesh(this.geometry.roof, this.materials.roofs[Math.floor(hash(seed, index, building + 95) * 4)], group, x, height, z, width + 0.9, 4.4, depth + 1, true);
+          roof.rotation.y = building % 2 && random > 0.5 ? Math.PI / 2 : 0;
+          this.box(group, 'wood', side * 11.47, height - 0.15, z, 0.22, 0.28, depth + 0.15);
+          for (let floor = 0; floor < Math.floor((height - 1.8) / 3); floor += 1) {
+            const y = 3.1 + floor * 3;
+            this.box(group, 'wood', side * 11.48, y - 1.2, z, 0.18, 0.16, depth);
+            for (const windowZ of [-6, 0, 6]) {
+              this.box(group, 'wood', side * 11.45, y, z + windowZ, 0.18, 1.5, 1.1);
+              this.box(group, 'glass', side * 11.33, y, z + windowZ, 0.12, 1.22, 0.81);
+              this.box(group, 'woodLight', side * 11.22, y, z + windowZ, 0.12, 1.27, 0.07);
+              this.box(group, 'woodLight', side * 11.22, y, z + windowZ, 0.12, 0.07, 0.84);
+            }
+          }
+          this.box(group, 'darkWood', side * 11.43, 1.35, z + 2, 0.18, 2.7, 1.4);
+          this.box(group, 'woodLight', side * 11.29, 1.35, z + 2, 0.12, 2.4, 0.08);
+          const awning = this.box(group, random > 0.5 ? 'canvasGreen' : 'canvas', side * 10.83, 3.05, z + 2, 1.55, 0.12, 3.8);
+          awning.rotation.z = side * 0.18;
+          this.box(group, 'wood', side * 10.2, 1.5, z + 0.2, 0.08, 3, 0.08);
+          this.box(group, 'wood', side * 10.2, 1.5, z + 3.8, 0.08, 3, 0.08);
+          if (random > 0.4) {
+            this.box(group, 'wood', side * (13 + width / 2), height + 2.4, z - 4, 0.9, 3.1, 1.2);
+            this.box(group, 'stone', side * (13 + width / 2), height + 4, z - 4, 1.1, 0.25, 1.4);
+          }
+          if (random > 0.58) {
+            this.box(group, 'wood', side * 10.99, 5.3, z - 4.5, 1.15, 0.18, 3.2);
+            for (let rail = -1; rail <= 1; rail += 1) this.box(group, 'iron', side * 10.45, 5.8, z - 4.5 + rail, 0.06, 1, 0.06);
+            this.box(group, 'iron', side * 10.45, 6.25, z - 4.5, 0.06, 0.06, 3.2);
           }
         }
-        this.box(group, 'darkWood', side * 11.43, 1.35, z + 2, 0.18, 2.7, 1.4);
-        this.box(group, 'woodLight', side * 11.29, 1.35, z + 2, 0.12, 2.4, 0.08);
-        const awning = this.box(group, random > 0.5 ? 'canvasGreen' : 'canvas', side * 10.83, 3.05, z + 2, 1.55, 0.12, 3.8);
-        awning.rotation.z = side * 0.18;
-        this.box(group, 'wood', side * 10.2, 1.5, z + 0.2, 0.08, 3, 0.08);
-        this.box(group, 'wood', side * 10.2, 1.5, z + 3.8, 0.08, 3, 0.08);
-        if (random > 0.4) {
-          this.box(group, 'wood', side * (13 + width / 2), height + 2.4, z - 4, 0.9, 3.1, 1.2);
-          this.box(group, 'stone', side * (13 + width / 2), height + 4, z - 4, 1.1, 0.25, 1.4);
+        for (const z of [-5, -32]) {
+          this.cylinder(group, 'iron', side * 10.55, 2.1, z, 0.065, 4.2);
+          this.box(group, 'iron', side * 10.55, 4.2, z, 0.42, 0.6, 0.42);
+          this.box(group, 'gold', side * 10.55, 4.2, z + 0.22, 0.25, 0.37, 0.02);
+          this.mesh(this.geometry.cone, 'iron', group, side * 10.55, 4.68, z, 0.4, 0.35, 0.4);
         }
-        if (random > 0.58) {
-          this.box(group, 'wood', side * 10.99, 5.3, z - 4.5, 1.15, 0.18, 3.2);
-          for (let rail = -1; rail <= 1; rail += 1) this.box(group, 'iron', side * 10.45, 5.8, z - 4.5 + rail, 0.06, 1, 0.06);
-          this.box(group, 'iron', side * 10.45, 6.25, z - 4.5, 0.06, 0.06, 3.2);
+        if (hash(seed, index, side + 140) > 0.45) {
+          this.cylinder(group, 'wood', side * 10.9, 1.4, -19, 0.17, 2.8);
+          this.mesh(this.geometry.sphere, 'leaves', group, side * 10.9, 3.4, -19, 1.25, 1.7, 1.15, true);
+          this.mesh(this.geometry.sphere, 'leaves', group, side * 10.5, 4.1, -19, 0.9, 1.1, 0.9);
         }
-      }
-      for (const z of [-5, -32]) {
-        this.cylinder(group, 'iron', side * 10.55, 2.1, z, 0.065, 4.2);
-        this.box(group, 'iron', side * 10.55, 4.2, z, 0.42, 0.6, 0.42);
-        this.box(group, 'gold', side * 10.55, 4.2, z + 0.22, 0.25, 0.37, 0.02);
-        this.mesh(this.geometry.cone, 'iron', group, side * 10.55, 4.68, z, 0.4, 0.35, 0.4);
-      }
-      if (hash(seed, index, side + 140) > 0.45) {
-        this.cylinder(group, 'wood', side * 10.9, 1.4, -19, 0.17, 2.8);
-        this.mesh(this.geometry.sphere, 'leaves', group, side * 10.9, 3.4, -19, 1.25, 1.7, 1.15, true);
-        this.mesh(this.geometry.sphere, 'leaves', group, side * 10.5, 4.1, -19, 0.9, 1.1, 0.9);
       }
     }
     if (index % 3 === 0) {
@@ -337,6 +367,7 @@ export class CityWorld {
     }
     this.scene.add(group);
     this.bakeChunk(group);
+    if (district) group.add(district);
     return group;
   }
 
@@ -471,7 +502,11 @@ export class CityWorld {
     cable.frustumCulled = false;
     root.add(cable);
     if (remote) root.add(nameTag(name));
-    return { root, visual, legs, arms, cape, cable, characterId, name, lastDistance: 0, target: null };
+    const actor = { root, visual, legs, arms, cape, cable, characterId, name };
+    loadModel(character.name).then(asset => {
+      if (root.parent) attachScout(actor, asset);
+    }).catch(error => console.warn('Scout model unavailable', error));
+    return actor;
   }
 
   makeTitan() {
@@ -549,32 +584,67 @@ export class CityWorld {
     actor.root.position.set(player.x, player.y - 1.1, -player.distance);
     actor.visual.visible = !(player.invincible > 0 && Math.floor(player.invincible * 12) % 2 === 0);
     actor.visual.rotation.z += ((-player.vx || 0) * -0.027 - actor.visual.rotation.z) * Math.min(1, dt * 8);
-    const cycle = time * (8 + (player.speed || 20) * 0.16);
-    if (player.grapple) {
-      actor.arms[0].rotation.x = -1.7 + Math.sin(cycle) * 0.15;
-      actor.arms[1].rotation.x = -1.7 - Math.sin(cycle) * 0.15;
-      actor.legs[0].rotation.x = 0.55 + Math.sin(cycle * 0.5) * 0.3;
-      actor.legs[1].rotation.x = -0.35 - Math.sin(cycle * 0.5) * 0.3;
-      actor.visual.rotation.x = -0.18;
-    } else {
-      actor.arms[0].rotation.x = Math.sin(cycle) * 0.65;
-      actor.arms[1].rotation.x = -Math.sin(cycle) * 0.65;
-      actor.legs[0].rotation.x = Math.sin(cycle) * 0.75;
-      actor.legs[1].rotation.x = -Math.sin(cycle) * 0.75;
-      actor.visual.rotation.x = -0.05;
+    const side = player.grappleSide || 1;
+    const oldAnchor = actor.anchor;
+    if (!player.grapple) actor.anchor = null;
+    else if (!oldAnchor || Math.sign(oldAnchor.x) !== side ||
+             oldAnchor.z > actor.root.position.z + 2 || oldAnchor.z < actor.root.position.z - 55) {
+      actor.anchor = null;
+      let best = Infinity;
+      for (const chunk of this.chunks.values()) {
+        for (const anchor of chunk.userData.anchors) {
+          const ahead = actor.root.position.z - anchor.z;
+          if (Math.sign(anchor.x) !== side || ahead < 8 || ahead >= best) continue;
+          actor.anchor = anchor;
+          best = ahead;
+        }
+      }
     }
-    actor.cape.rotation.x = -0.25 - Math.min(0.65, (player.speed || 20) * 0.015) + Math.sin(time * 11) * 0.07;
-    actor.cable.visible = Boolean(player.grapple);
-    if (player.grapple) {
+    if (actor.mixer) {
+      playScout(actor, player, !!actor.anchor && oldAnchor !== actor.anchor, dt);
+    } else {
+      const cycle = time * (8 + (player.speed || 20) * 0.16);
+      if (player.grapple) {
+        actor.arms[0].rotation.x = -1.7 + Math.sin(cycle) * 0.15;
+        actor.arms[1].rotation.x = -1.7 - Math.sin(cycle) * 0.15;
+        actor.legs[0].rotation.x = 0.55 + Math.sin(cycle * 0.5) * 0.3;
+        actor.legs[1].rotation.x = -0.35 - Math.sin(cycle * 0.5) * 0.3;
+        actor.visual.rotation.x = -0.18;
+      } else {
+        actor.arms[0].rotation.x = Math.sin(cycle) * 0.65;
+        actor.arms[1].rotation.x = -Math.sin(cycle) * 0.65;
+        actor.legs[0].rotation.x = Math.sin(cycle) * 0.75;
+        actor.legs[1].rotation.x = -Math.sin(cycle) * 0.75;
+        actor.visual.rotation.x = -0.05;
+      }
+      actor.cape.rotation.x = -0.25 - Math.min(0.65, (player.speed || 20) * 0.015) + Math.sin(time * 11) * 0.07;
+    }
+    actor.cable.visible = Boolean(actor.anchor);
+    if (actor.anchor) {
+      const end = actor.anchor;
+      const x = end.x - actor.root.position.x;
+      const y = end.y - actor.root.position.y;
+      const z = end.z - actor.root.position.z;
+      const grip = side * .38;
       const positions = actor.cable.geometry.attributes.position;
-      positions.setXYZ(0, 0.38, 1.55, -0.15);
-      positions.setXYZ(1, player.grappleSide * 5.8, 7.5, -7.5);
-      positions.setXYZ(2, player.grappleSide * 12.7, 10.5, -16);
+      positions.setXYZ(0, grip, 1.32, 0);
+      positions.setXYZ(1, (x + grip) / 2, (y + 1.32) / 2 - .13, z / 2);
+      positions.setXYZ(2, x, y, z);
       positions.needsUpdate = true;
     }
   }
 
   syncChunks(seed, distance, player) {
+    if (this.chunkSeed !== seed) {
+      for (const chunk of this.chunks.values()) {
+        this.scene.remove(chunk);
+        this.chunkPool.push(chunk);
+      }
+      this.chunks.clear();
+      this.localActor.anchor = null;
+      for (const actor of this.actors.values()) actor.anchor = null;
+      this.chunkSeed = seed;
+    }
     const current = Math.floor(distance / SEGMENT_LENGTH);
     const needed = new Set();
     for (let index = Math.max(0, current - 2); index <= current + 9; index += 1) {
@@ -613,6 +683,7 @@ export class CityWorld {
       this.localActor = this.makeScout(player.character, player.name || 'You', false);
       this.scene.add(this.localActor.root);
     }
+    this.syncChunks(seed, player.distance, player);
     this.animateScout(this.localActor, player, this.clock, dt);
     const seen = new Set();
     for (const remote of remotePlayers) {
@@ -638,7 +709,7 @@ export class CityWorld {
         this.actors.delete(id);
       }
     }
-    this.syncChunks(seed, player.distance, player);
+
     if (mode !== 'menu') {
       const threat = player.threat ?? 75;
       this.titan.root.visible = threat < 57 || this.lookBack;

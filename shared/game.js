@@ -210,6 +210,7 @@ export function publicRunner(runner) {
     character: runner.character,
     x: runner.x,
     y: runner.y,
+    vx: runner.vx,
     distance: runner.distance,
     speed: runner.speed,
     gas: runner.gas,
