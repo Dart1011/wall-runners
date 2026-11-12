@@ -3,7 +3,7 @@ import { createServer } from 'node:http';
 import { Server } from 'socket.io';
 import {
   MAX_PLAYERS, TICK_RATE, cleanName, characterFor, createRunner,
-  freshInput, publicRunner, roomCode, stepRunner,
+  freshInput, publicRunner, roomCode, stepRunner, findAttackTarget, applyStrike,
 } from './shared/game.js';
 
 const app = express();
@@ -112,14 +112,67 @@ io.on('connection', (socket) => {
     });
   });
 
+  socket.on('player:attack', (_, reply = () => {}) => {
+    const context = getRoom(socket);
+    if (!context) return reply({ ok: false, message: 'Not in a squad.' });
+    const { room, player: attacker } = context;
+    if (room.phase !== 'running' || Date.now() < room.startAt || !attacker.alive || attacker.spectating) return reply({ ok: false, message: 'You cannot attack right now.' });
+    if (attacker.attackCooldown > 0) return reply({ ok: false, message: 'Blade recharging.' });
+    if (attacker.blades < 1) return reply({ ok: false, message: 'Collect a blade power-up first.' });
+    const target = findAttackTarget(attacker, [...room.players.values()], room.seed);
+    if (!target) return reply({ ok: false, message: 'No opponent in line of sight.' });
+    applyStrike(attacker, target);
+    const events = [{ type: 'hit', source: 'scout', attacker: attacker.name, lives: target.lives }];
+    if (!target.alive) events.push({ type: 'eliminated' });
+    io.to(room.code).emit('player:events', { id: target.id, events });
+    io.to(room.code).emit('combat:event', {
+      attackerId: attacker.id,
+      targetId: target.id,
+      attackerName: attacker.name,
+      targetName: target.name,
+      attacker: publicRunner(attacker),
+      target: publicRunner(target),
+    });
+    reply({ ok: true, blades: attacker.blades, cooldown: attacker.attackCooldown });
+  });
+
+  socket.on('voice:join', (_, reply = () => {}) => {
+    const context = getRoom(socket);
+    if (!context) return reply({ error: 'Join a squad before enabling voice.' });
+    const peers = [...context.room.players.keys()].filter((id) => id !== socket.id && io.sockets.sockets.get(id)?.data.voice);
+    socket.data.voice = true;
+    reply({ ok: true, peers });
+    socket.to(context.room.code).emit('voice:peer-join', { id: socket.id });
+  });
+
+  socket.on('voice:signal', ({ to, description, candidate } = {}) => {
+    const context = getRoom(socket);
+    if (!context || !socket.data.voice || typeof to !== 'string') return;
+    const target = io.sockets.sockets.get(to);
+    if (!context.room.players.has(to) || !target?.data.voice) return;
+    target.emit('voice:signal', { from: socket.id, description, candidate });
+  });
+
+  socket.on('voice:leave', () => {
+    const context = getRoom(socket);
+    if (context) leaveVoice(socket, context.room);
+  });
+
   socket.on('room:leave', () => leaveRoom(socket));
   socket.on('disconnect', () => leaveRoom(socket));
 });
+
+function leaveVoice(socket, room) {
+  if (!socket.data.voice) return;
+  socket.data.voice = false;
+  socket.to(room.code).emit('voice:peer-leave', { id: socket.id });
+}
 
 function leaveRoom(socket) {
   const context = getRoom(socket);
   if (!context) return;
   const { room } = context;
+  leaveVoice(socket, room);
   room.players.delete(socket.id);
   room.inputs.delete(socket.id);
   socket.leave(room.code);

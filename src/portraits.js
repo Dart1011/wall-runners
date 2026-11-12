@@ -1,6 +1,6 @@
 import { characterFor } from '../shared/game.js';
 
-export function portrait(id, className = '') {
+function illustratedPortrait(id, className = '') {
   const character = characterFor(id);
   const bob = id === 'mikasa';
   const short = id === 'levi';
@@ -26,4 +26,10 @@ export function portrait(id, className = '') {
     <path d="m64 155 8 5 5-4-8-4m28 3-8 5-5-4 8-4" fill="none" stroke="#dbe0c6" stroke-width="1.5"/>
     <path d="M0 172h160v8H0z" fill="#17271f" opacity=".3"/>
   </svg>`;
+}
+
+
+export function portrait(id, className = '') {
+  const character = characterFor(id);
+  return `<span class="portrait photo-portrait ${className}"><span class="portrait-fallback" aria-hidden="true">${illustratedPortrait(id)}</span><img src="/portraits/${character.id}.jpg" alt="${character.name} portrait" loading="eager" decoding="async" onerror="this.remove()" /></span>`;
 }

@@ -78,10 +78,11 @@ function nameTag(name) {
   context.font = '600 23px sans-serif';
   context.textAlign = 'center';
   context.fillText(name.toUpperCase().slice(0, 14), 128, 35);
-  const material = new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(canvas), transparent: true, depthWrite: false });
+  const material = new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(canvas), transparent: true, depthWrite: false, depthTest: false });
   const sprite = new THREE.Sprite(material);
-  sprite.position.y = 3.1;
-  sprite.scale.set(2.6, 0.65, 1);
+  sprite.position.y = 3.25;
+  sprite.scale.set(3.1, 0.78, 1);
+  sprite.renderOrder = 20;
   return sprite;
 }
 
@@ -104,6 +105,8 @@ export class CityWorld {
     this.chunks = new Map();
     this.chunkPool = [];
     this.actors = new Map();
+    this.strikes = [];
+    this.targetId = null;
     this.materials = {};
     this.geometry = {
       box: new THREE.BoxGeometry(1, 1, 1),
@@ -407,7 +410,7 @@ export class CityWorld {
   makePickup(parent, pickup, segment) {
     const group = new THREE.Group();
     group.position.set(pickup.x, pickup.y, -(pickup.distance - segment * SEGMENT_LENGTH));
-    const ringColor = pickup.type === 'gas' ? 'gas' : pickup.type === 'heart' ? 'red' : 'gold';
+    const ringColor = pickup.type === 'gas' ? 'gas' : pickup.type === 'heart' || pickup.type === 'strike' ? 'red' : 'gold';
     const ring = this.mesh(this.geometry.torus, ringColor, group);
     ring.rotation.x = Math.PI / 2;
     if (pickup.type === 'gas') {
@@ -420,6 +423,13 @@ export class CityWorld {
       this.mesh(this.geometry.octahedron, 'gold', group);
       const inner = this.mesh(this.geometry.torus, 'white', group, 0, 0, 0, 0.45, 0.45, 0.45);
       inner.rotation.y = Math.PI / 2;
+    } else if (pickup.type === 'strike') {
+      const leftBlade = this.box(group, 'metal', -0.13, 0, 0, 0.09, 0.95, 0.06);
+      leftBlade.rotation.z = -0.55;
+      const rightBlade = this.box(group, 'white', 0.13, 0, 0, 0.09, 0.95, 0.06);
+      rightBlade.rotation.z = 0.55;
+      this.box(group, 'gold', -0.38, -0.34, 0, 0.35, 0.08, 0.13).rotation.z = -0.55;
+      this.box(group, 'gold', 0.38, -0.34, 0, 0.35, 0.08, 0.13).rotation.z = 0.55;
     } else if (pickup.type === 'heart') {
       this.mesh(this.geometry.sphere, 'red', group, -0.19, 0.15, 0, 0.28, 0.28, 0.23);
       this.mesh(this.geometry.sphere, 'red', group, 0.19, 0.15, 0, 0.28, 0.28, 0.23);
@@ -501,8 +511,9 @@ export class CityWorld {
     const cable = new THREE.Line(cableGeometry, cableMaterial);
     cable.frustumCulled = false;
     root.add(cable);
-    if (remote) root.add(nameTag(name));
-    const actor = { root, visual, legs, arms, cape, cable, characterId, name };
+    const tag = remote ? nameTag(name) : null;
+    if (tag) root.add(tag);
+    const actor = { root, visual, legs, arms, cape, cable, characterId, name, tag };
     loadModel(character.name).then(asset => {
       if (root.parent) attachScout(actor, asset);
     }).catch(error => console.warn('Scout model unavailable', error));
@@ -676,6 +687,18 @@ export class CityWorld {
     this.clouds.position.z = -Math.floor(distance / 200) * 200;
   }
 
+  showStrike(attacker, target) {
+    const geometry = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(attacker.x, attacker.y + 0.65, -attacker.distance),
+      new THREE.Vector3(target.x, target.y + 0.65, -target.distance),
+    ]);
+    const material = new THREE.LineBasicMaterial({ color: '#ffe0a1', transparent: true, opacity: 1, depthTest: false });
+    const line = new THREE.Line(geometry, material);
+    line.renderOrder = 19;
+    this.scene.add(line);
+    this.strikes.push({ line, life: 0.45, duration: 0.45 });
+  }
+
   update(player, remotePlayers = [], seed = 1, dt = 0.016, mode = 'playing') {
     this.clock += dt;
     if (mode === 'menu') {
@@ -709,6 +732,7 @@ export class CityWorld {
         this.scene.add(replacement.root);
       }
       this.animateScout(this.actors.get(remote.id), remote, this.clock + 0.2, dt);
+      if (actor.tag) actor.tag.material.color.set(this.targetId === remote.id ? '#ffad87' : '#ffffff');
     }
     for (const [id, actor] of this.actors) {
       if (!seen.has(id)) {
@@ -765,6 +789,17 @@ export class CityWorld {
       }
       this.camera.fov += ((player.boostTime > 0 ? 66 : 58) - this.camera.fov) * Math.min(1, dt * 4);
       this.camera.updateProjectionMatrix();
+    }
+    for (let index = this.strikes.length - 1; index >= 0; index -= 1) {
+      const strike = this.strikes[index];
+      strike.life -= dt;
+      strike.line.material.opacity = Math.max(0, strike.life / strike.duration);
+      if (strike.life <= 0) {
+        this.scene.remove(strike.line);
+        strike.line.geometry.dispose();
+        strike.line.material.dispose();
+        this.strikes.splice(index, 1);
+      }
     }
     this.renderer.render(this.scene, this.camera);
   }

@@ -1,0 +1,9 @@
+{
+  "note": "Attack on Titan character artwork belongs to its respective rights holders. These portrait references are bundled for this fan-made character selector; original illustrated fallbacks remain in src/portraits.js.",
+  "characters": [
+    { "id": "eren", "source": "https://myanimelist.net/character/40882/Eren_Yeager", "image": "https://kimi-web-img.kimi.ai/prod-data/online-image/search-upload/cdad288020f93f7219bc3e9f8fa6b0fb.jpg" },
+    { "id": "mikasa", "source": "https://myanimelist.net/character/40881/Mikasa_Ackerman", "image": "https://kimi-web-img.kimi.ai/prod-data/online-image/search-upload/a4de3490f429a47e40b0eaacfb75fd8b.jpg" },
+    { "id": "armin", "source": "https://myanimelist.net/character/46494/Armin_Arlert", "image": "https://kimi-web-img.kimi.ai/prod-data/online-image/search-upload/ea1db5ad511df60f461055dc69821c6a.jpg" },
+    { "id": "levi", "source": "https://myanimelist.net/character/45627/Levi_Ackerman", "image": "https://kimi-web-img.kimi.ai/prod-data/online-image/search-upload/c037e343a634dbc4f47ab0504b5127cb.jpg" }
+  ]
+}

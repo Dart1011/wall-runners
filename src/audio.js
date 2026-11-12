@@ -61,6 +61,8 @@ export class AudioEngine {
     if (type === 'supply') { this.tone(440, 0.13, 'sine', 0.05, 660); setTimeout(() => this.tone(660, 0.18, 'sine', 0.04, 880), 80); }
     if (type === 'heart') { this.tone(440, 0.3, 'sine', 0.07, 880); this.tone(660, 0.4, 'sine', 0.04, 1100); }
     if (type === 'boost') this.tone(130, 0.6, 'sawtooth', 0.06, 580);
+    if (type === 'attack') this.tone(720, 0.16, 'sawtooth', 0.055, 180);
+    if (type === 'strike') { this.tone(380, 0.15, 'triangle', 0.06, 760); this.tone(760, 0.25, 'sine', 0.04, 980); }
     if (type === 'pace') { this.tone(330, 0.24, 'triangle', 0.05, 660); this.tone(495, 0.3, 'sine', 0.035, 990); }
     if (type === 'hit') { this.tone(120, 0.4, 'sawtooth', 0.1, 35); this.tone(65, 0.35, 'square', 0.06, 30); }
     if (type === 'start') this.tone(220, 0.5, 'triangle', 0.05, 440);

@@ -1,6 +1,8 @@
 export const SEGMENT_LENGTH = 44;
 export const MAX_PLAYERS = 8;
 export const TICK_RATE = 30;
+export const ATTACK_RANGE = 70;
+export const ATTACK_COOLDOWN = 2.2;
 
 export const CHARACTERS = [
   { id: 'eren', name: 'Eren', role: 'The Fighter', trait: 'Breakneck speed', detail: '+5% running speed', color: '#826044', accent: '#72886a', hair: '#352b24', skin: '#e3b08b', speed: 1.05, handling: 1, gasUse: 1 },
@@ -45,6 +47,8 @@ export function createRunner(id, name, character = 'eren', slot = 0) {
     bonus: 0,
     supplies: 0,
     combo: 1,
+    blades: 0,
+    attackCooldown: 0,
     level: 1,
     threat: 76,
     boostTime: 0,
@@ -68,7 +72,7 @@ export function getSegment(seed, index) {
     const distance = index * SEGMENT_LENGTH + 13 + row * 21;
     const safeLane = Math.floor(hash(seed, index, row + 10) * 3);
     const doubleObstacleChance = Math.min(0.9, 0.45 + Math.floor(index * SEGMENT_LENGTH / 500) * 0.07);
-    const obstacleCount = index < 1 ? (row === 0 ? 1 : 0) : hash(seed, index, row + 20) < doubleObstacleChance ? 2 : 1;
+    const obstacleCount = index < 1 ? 0 : hash(seed, index, row + 20) < doubleObstacleChance ? 2 : 1;
     const blockedLanes = [0, 1, 2].filter((lane) => lane !== safeLane).slice(0, obstacleCount);
     for (let lane = 0; lane < 3; lane += 1) {
       if (!blockedLanes.includes(lane)) continue;
@@ -85,7 +89,7 @@ export function getSegment(seed, index) {
     }
     const pickupLane = lanes[safeLane];
     const roll = hash(seed, index, row + 50);
-    const type = index > 4 && index % 19 === 0 && row === 0 ? 'heart' : roll > 0.78 ? 'boost' : roll > 0.35 ? 'gas' : 'supply';
+    const type = index === 1 && row === 0 ? 'strike' : index > 4 && index % 19 === 0 && row === 0 ? 'heart' : roll > 0.88 ? 'strike' : roll > 0.7 ? 'boost' : roll > 0.32 ? 'gas' : 'supply';
     pickups.push({
       id: index * 2 + row,
       x: pickupLane,
@@ -105,6 +109,7 @@ export function stepRunner(runner, input, dt, seed) {
   runner.invincible = Math.max(0, runner.invincible - dt);
   runner.hitCooldown = Math.max(0, runner.hitCooldown - dt);
   runner.boostTime = Math.max(0, runner.boostTime - dt);
+  runner.attackCooldown = Math.max(0, runner.attackCooldown - dt);
 
   if (input.boost && runner.gas >= 25 && runner.boostTime <= 0.05) {
     runner.gas -= 25;
@@ -137,15 +142,15 @@ export function stepRunner(runner, input, dt, seed) {
     runner.vx *= -0.25;
   }
 
-  const baseSpeed = 19 + runner.distance / 400;
-  runner.speed = baseSpeed * character.speed + (runner.grapple ? 4.5 : 0) + (runner.boostTime > 0 ? 14 : 0);
+  const baseSpeed = 28.5 + runner.distance / 300;
+  runner.speed = baseSpeed * character.speed + (runner.grapple ? 7.5 : 0) + (runner.boostTime > 0 ? 18 : 0);
   const previousDistance = runner.distance;
   runner.distance += runner.speed * dt;
   const previousLevel = runner.level;
   runner.level = 1 + Math.floor(runner.distance / 500);
   if (runner.level > previousLevel) events.push({ type: 'pace', level: runner.level });
   runner.score = Math.floor(runner.distance + runner.supplies * 75 + runner.bonus);
-  const pressure = 0.78 + (runner.level - 1) * 0.12;
+  const pressure = 1.1 + (runner.level - 1) * 0.16;
   runner.threat = Math.max(0, runner.threat - pressure * (runner.character === 'levi' ? 0.82 : 1) * dt);
 
   const hurt = (source) => {
@@ -193,6 +198,7 @@ export function stepRunner(runner, input, dt, seed) {
         if (pickup.type === 'gas') runner.gas = Math.min(100, runner.gas + 42);
         if (pickup.type === 'boost') runner.boostTime = Math.max(runner.boostTime, 2.2);
         if (pickup.type === 'heart') runner.lives = Math.min(3, runner.lives + 1);
+        if (pickup.type === 'strike') runner.blades = Math.min(3, runner.blades + 2);
         runner.supplies += 1;
         runner.combo = Math.min(5, runner.combo + 0.25);
         runner.bonus += Math.floor(75 * (runner.combo - 1));
@@ -217,6 +223,8 @@ export function publicRunner(runner) {
     lives: runner.lives,
     score: runner.score,
     supplies: runner.supplies,
+    blades: runner.blades,
+    attackCooldown: runner.attackCooldown,
     level: runner.level,
     threat: runner.threat,
     grapple: runner.grapple,
@@ -226,6 +234,46 @@ export function publicRunner(runner) {
     invincible: runner.invincible,
     spectating: Boolean(runner.spectating),
   };
+}
+
+export function hasLineOfSight(attacker, target, seed) {
+  const distance = target.distance - attacker.distance;
+  if (distance <= 0 || distance > ATTACK_RANGE) return false;
+  const firstSegment = Math.max(0, Math.floor(attacker.distance / SEGMENT_LENGTH));
+  const lastSegment = Math.floor(target.distance / SEGMENT_LENGTH);
+  for (let index = firstSegment; index <= lastSegment; index += 1) {
+    for (const obstacle of getSegment(seed, index).obstacles) {
+      const progress = (obstacle.distance - attacker.distance) / distance;
+      if (progress <= 0 || progress >= 1) continue;
+      const x = attacker.x + (target.x - attacker.x) * progress;
+      const y = attacker.y + (target.y - attacker.y) * progress;
+      if (y < obstacle.height + 0.5 && Math.abs(x - obstacle.x) < obstacle.width / 2 + 0.3) return false;
+    }
+  }
+  return true;
+}
+
+export function findAttackTarget(attacker, candidates, seed) {
+  return candidates
+    .filter((candidate) => candidate.id !== attacker.id && candidate.alive && !candidate.spectating && candidate.invincible <= 0 && candidate.distance > attacker.distance && candidate.distance - attacker.distance <= ATTACK_RANGE)
+    .sort((a, b) => a.distance - b.distance)
+    .find((candidate) => hasLineOfSight(attacker, candidate, seed)) || null;
+}
+
+export function applyStrike(attacker, target) {
+  attacker.blades -= 1;
+  attacker.attackCooldown = ATTACK_COOLDOWN;
+  attacker.bonus += 100;
+  target.lives -= 1;
+  target.invincible = 2.5;
+  target.hitCooldown = 1.1;
+  target.threat = Math.max(20, target.threat - 18);
+  target.boostTime = 0;
+  target.combo = 1;
+  if (target.lives <= 0) {
+    target.alive = false;
+    target.finished = true;
+  }
 }
 
 export function roomCode() {

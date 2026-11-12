@@ -3,19 +3,24 @@ import { io } from 'socket.io-client';
 import { CityWorld } from './world.js';
 import { AudioEngine } from './audio.js';
 import { portrait } from './portraits.js';
-import { CHARACTERS, characterFor, cleanName, createRunner, freshInput, stepRunner } from '../shared/game.js';
+import { VoiceChat } from './voice.js';
+import { CHARACTERS, characterFor, cleanName, createRunner, freshInput, stepRunner, findAttackTarget } from '../shared/game.js';
 
 const $ = (selector) => document.querySelector(selector);
 const socket = io();
 const audio = new AudioEngine();
 const world = new CityWorld($('#world'));
+const voice = new VoiceChat(socket, {
+  onChange: updateVoiceButton,
+  onError: (error) => console.warn('Voice connection:', error.message),
+});
 const keys = new Set();
 const touchInput = freshInput();
 const state = {
   screen: 'menu', selected: localStorage.getItem('wall-runners-character') || 'eren',
   room: null, playerId: null, local: null, seed: 1, startAt: 0,
   remotes: new Map(), spectating: false, watching: false, resultSaved: false,
-  mouseGrapple: false, boostQueued: false, localBoostPending: false, toastTimer: null, lastCountdown: null,
+  mouseGrapple: false, boostQueued: false, localBoostPending: false, attackPending: false, toastTimer: null, lastCountdown: null,
 };
 if (!CHARACTERS.some((character) => character.id === state.selected)) state.selected = 'eren';
 $('#name-input').value = localStorage.getItem('wall-runners-name') || '';
@@ -42,6 +47,19 @@ function toast(message) {
   void element.offsetWidth;
   element.style.animation = '';
   state.toastTimer = setTimeout(() => { element.hidden = true; }, 1750);
+}
+
+function updateVoiceButton(status) {
+  const button = $('#voice-button');
+  button.disabled = !state.room || !socket.connected || status.connecting;
+  button.classList.toggle('active', status.enabled);
+  button.classList.toggle('connecting', status.connecting);
+  button.dataset.connected = status.connected;
+  button.dataset.enabled = status.enabled;
+  button.title = status.enabled ? `${status.connected} squad member${status.connected === 1 ? '' : 's'} connected` : 'Enable squad voice chat';
+  button.setAttribute('aria-label', status.enabled ? 'Disable squad voice chat' : 'Enable squad voice chat');
+  $('#voice-label').textContent = status.connecting ? 'CONNECTING' : status.enabled ? `VOICE ON${status.connected ? ` · ${status.connected}` : ''}` : 'VOICE OFF';
+  $('#voice-button use').setAttribute('href', status.enabled ? '#icon-mic' : '#icon-mic-off');
 }
 
 function updateSoundIcon() {
@@ -159,6 +177,7 @@ function enterPlaying() {
   state.lastCountdown = null;
   $('#hud-room').textContent = state.room?.code || '-----';
   show($('#spectator-notice'), state.spectating);
+  show($('#attack-status'), !state.spectating);
   $('#hud-portrait').innerHTML = portrait(state.local.character);
   $('#hud-name').textContent = state.local.name.toUpperCase();
   audio.event('start');
@@ -174,6 +193,7 @@ function startRun({ seed, startAt, players }) {
   state.remotes.clear();
   state.boostQueued = false;
   state.localBoostPending = false;
+  state.attackPending = false;
   keys.clear();
   enterPlaying();
   show($('#countdown'), true);
@@ -183,7 +203,7 @@ function startRun({ seed, startAt, players }) {
 
 function processEvent(event) {
   if (event.type === 'pickup') {
-    const messages = { gas: '+ ODM GAS', boost: 'BOOST ACQUIRED', heart: '+ ONE LIFE', supply: '+75 SUPPLIES' };
+    const messages = { gas: '+ ODM GAS', boost: 'BOOST ACQUIRED', heart: '+ ONE LIFE', supply: '+75 SUPPLIES', strike: '+2 BLADE STRIKES' };
     toast(messages[event.pickup]);
     audio.event(event.pickup);
   } else if (event.type === 'pace') {
@@ -196,7 +216,7 @@ function processEvent(event) {
     void $('#damage-flash').offsetWidth;
     $('#damage-flash').classList.add('flash');
     audio.event('hit');
-    toast(event.source === 'titan' ? 'TITAN STRIKE — MOVE!' : `${event.lives} ${event.lives === 1 ? 'LIFE' : 'LIVES'} REMAINING`);
+    toast(event.source === 'scout' ? `${event.attacker} HIT YOU` : event.source === 'titan' ? 'TITAN STRIKE — MOVE!' : `${event.lives} ${event.lives === 1 ? 'LIFE' : 'LIVES'} REMAINING`);
     if (navigator.vibrate) navigator.vibrate(80);
   } else if (event.type === 'eliminated') {
     audio.event('eliminated');
@@ -236,7 +256,21 @@ function showResults() {
   $('#results-eyebrow').textContent = roomFinished ? 'RUN COMPLETE' : 'SCOUT DOWN';
 }
 
+function attack() {
+  if (state.screen !== 'playing' || state.spectating || !state.local?.alive || state.attackPending) return;
+  if (state.local.blades < 1) { toast('COLLECT A BLADE POWER-UP'); return; }
+  if (state.local.attackCooldown > 0) return;
+  state.attackPending = true;
+  socket.emit('player:attack', {}, (response = {}) => {
+    state.attackPending = false;
+    if (!response.ok) { toast(response.message || 'NO CLEAR TARGET'); return; }
+    state.local.blades = response.blades;
+    state.local.attackCooldown = response.cooldown;
+  });
+}
+
 function leaveRoom() {
+  voice.stop();
   socket.emit('room:leave');
   state.room = null;
   state.playerId = null;
@@ -262,6 +296,13 @@ function updateHud(player, players) {
   $('#distance').textContent = Math.floor(player.distance).toLocaleString();
   $('#run-score').textContent = `${String(Math.floor(player.score)).padStart(6, '0')} PTS`;
   $('#run-pace').textContent = `PACE ${String(player.level || 1).padStart(2, '0')} · ${Math.round(player.speed)} M/S`;
+  const blades = state.spectating ? 0 : player.blades || 0;
+  const target = blades > 0 && player.attackCooldown <= 0 ? findAttackTarget(player, players, state.seed) : null;
+  world.targetId = target?.id || null;
+  $('#attack-count').textContent = blades;
+  $('#mobile-blades').textContent = blades;
+  $('#target-status').textContent = blades < 1 ? 'COLLECT BLADE POWER-UP' : player.attackCooldown > 0 ? `${player.attackCooldown.toFixed(1)}S RECHARGE` : target ? 'TARGET IN SIGHT' : 'NO CLEAR TARGET';
+  $('#attack-status').classList.toggle('ready', Boolean(target));
   $('#gas-fill').style.width = `${player.gas}%`;
   $('#gas-fill').classList.toggle('low', player.gas < 25);
   $('#gas-value').textContent = `${Math.round(player.gas)}%`;
@@ -278,10 +319,13 @@ function updateHud(player, players) {
 }
 
 socket.on('connect', () => {
+  updateVoiceButton(voice.status);
   $('#server-status').innerHTML = '<i></i> SERVER ONLINE';
   $('#server-status').classList.remove('offline');
 });
 socket.on('disconnect', () => {
+  voice.stop();
+  updateVoiceButton(voice.status);
   $('#server-status').innerHTML = '<i></i> RECONNECTING';
   $('#server-status').classList.add('offline');
   if (state.screen === 'playing' || state.screen === 'results') toast('CONNECTION LOST — RECONNECTING…');
@@ -292,6 +336,7 @@ socket.on('connect_error', () => {
 });
 socket.on('room', (room) => {
   state.room = room;
+  updateVoiceButton(voice.status);
   if (state.screen === 'lobby') renderLobby();
   if (room.phase === 'results' && state.spectating) {
     state.spectating = false;
@@ -322,6 +367,8 @@ socket.on('run:state', ({ players }) => {
       local.supplies = player.supplies;
       local.score = player.score;
       local.invincible = player.invincible;
+      local.blades = player.blades;
+      local.attackCooldown = player.attackCooldown;
       if (player.alive) local.alive = true;
       else {
         local.alive = false;
@@ -360,6 +407,12 @@ socket.on('player:events', ({ id, events }) => {
   }
 });
 
+socket.on('combat:event', (event) => {
+  world.showStrike(event.attacker, event.target);
+  audio.event('attack');
+  if (event.attackerId === state.playerId) toast(`STRIKE LANDED · ${event.targetName}`);
+});
+
 $('#create-room').addEventListener('click', () => joinRoom());
 $('#join-form').addEventListener('submit', (event) => { event.preventDefault(); joinRoom($('#code-input').value); });
 $('#code-input').addEventListener('input', () => { $('#code-input').value = $('#code-input').value.toUpperCase().replace(/[^A-Z0-9]/g, ''); });
@@ -377,6 +430,15 @@ $('#brand').addEventListener('click', () => { if (state.screen === 'menu') retur
 $('#pause-button').addEventListener('click', () => show($('#pause-screen'), true));
 $('#resume-run').addEventListener('click', () => show($('#pause-screen'), false));
 $('#sound-button').addEventListener('click', () => { audio.toggle(); updateSoundIcon(); });
+$('#voice-button').addEventListener('click', async () => {
+  if (voice.enabled) { voice.stop(); return; }
+  if (!state.room) return;
+  try {
+    await voice.start(state.room.code);
+  } catch (error) {
+    toast(error.message || 'Microphone access was denied.');
+  }
+});
 const openGuide = () => { if (!$('#guide-dialog').open) $('#guide-dialog').showModal(); };
 $('#guide-button').addEventListener('click', openGuide);
 $('#open-guide').addEventListener('click', openGuide);
@@ -394,6 +456,7 @@ window.addEventListener('keydown', (event) => {
   if (state.screen !== 'playing' || state.spectating) return;
   if (['Space', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'ShiftLeft', 'ShiftRight'].includes(event.code)) event.preventDefault();
   keys.add(event.code);
+  if (event.code === 'KeyF' && !event.repeat) attack();
   if ((event.code === 'ShiftLeft' || event.code === 'ShiftRight') && !event.repeat) {
     state.boostQueued = true;
     state.localBoostPending = true;
@@ -410,6 +473,7 @@ $('#world').addEventListener('pointerdown', (event) => {
 });
 $('#world').addEventListener('pointerup', () => { state.mouseGrapple = false; });
 $('#world').addEventListener('pointercancel', () => { state.mouseGrapple = false; });
+document.querySelector('[data-action="attack"]').addEventListener('click', attack);
 document.querySelectorAll('[data-input]').forEach((button) => {
   button.addEventListener('pointerdown', (event) => {
     event.preventDefault();
@@ -435,6 +499,7 @@ setInterval(() => {
 
 buildCharacterSelectors();
 updateSoundIcon();
+updateVoiceButton(voice.status);
 const inviteCode = new URLSearchParams(window.location.search).get('room');
 if (inviteCode) $('#code-input').value = inviteCode.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 5);
 
