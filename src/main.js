@@ -20,7 +20,7 @@ const state = {
   screen: 'menu', selected: localStorage.getItem('wall-runners-character') || 'eren',
   room: null, playerId: null, local: null, seed: 1, startAt: 0,
   remotes: new Map(), spectating: false, watching: false, resultSaved: false,
-  mouseGrapple: false, boostQueued: false, localBoostPending: false, attackPending: false, toastTimer: null, lastCountdown: null,
+  mouseGrapple: false, boostQueued: false, localBoostPending: false, attackPending: false, toastTimer: null, lastCountdown: null, rejoining: false,
 };
 if (!CHARACTERS.some((character) => character.id === state.selected)) state.selected = 'eren';
 $('#name-input').value = localStorage.getItem('wall-runners-name') || '';
@@ -51,7 +51,7 @@ function toast(message) {
 
 function updateVoiceButton(status) {
   const button = $('#voice-button');
-  button.disabled = !state.room || !socket.connected || status.connecting;
+  button.disabled = !state.room || !socket.connected || status.connecting || state.rejoining;
   button.classList.toggle('active', status.enabled);
   button.classList.toggle('connecting', status.connecting);
   button.dataset.connected = status.connected;
@@ -130,13 +130,13 @@ function escapeHtml(value) {
   return element.innerHTML;
 }
 
-async function joinRoom(code = '') {
+async function joinRoom(code = '', rejoin = false) {
   if (!socket.connected) {
     $('#menu-error').textContent = 'The game server is reconnecting. Please try again in a moment.';
     show($('#menu-error'), true);
-    return;
+    return false;
   }
-  audio.unlock();
+  if (!rejoin) audio.unlock();
   show($('#menu-error'), false);
   $('#create-room').disabled = true;
   $('#join-room').disabled = true;
@@ -152,18 +152,22 @@ async function joinRoom(code = '') {
     state.startAt = response.startAt;
     state.remotes.clear();
     window.history.replaceState({}, '', `?room=${response.code}`);
-    if (response.spectating) {
-      state.spectating = true;
+    state.spectating = response.spectating === true;
+    if (state.spectating) {
       state.local = createRunner(response.id, name, state.selected);
       enterPlaying();
-      toast('SPECTATING — YOU JOIN THE NEXT RUN');
+      toast(rejoin ? 'RECONNECTED — SPECTATING UNTIL NEXT RUN' : 'SPECTATING — YOU JOIN THE NEXT RUN');
     } else {
+      state.local = null;
       setScreen('lobby');
       renderLobby();
+      if (rejoin) toast('RECONNECTED TO SQUAD');
     }
+    return true;
   } catch (error) {
     $('#menu-error').textContent = error.message || 'Could not connect. Please try again.';
     show($('#menu-error'), true);
+    return false;
   } finally {
     $('#create-room').disabled = false;
     $('#join-room').disabled = false;
@@ -318,17 +322,32 @@ function updateHud(player, players) {
   $('#leaderboard-list').innerHTML = sorted.map((item, index) => `<div class="leader-row ${item.id === state.playerId ? 'local' : ''} ${item.alive ? '' : 'out'}"><span class="rank">${index + 1}</span><span class="leader-dot"></span><span class="leader-name">${escapeHtml(item.name)}${item.id === state.playerId ? ' · YOU' : ''}</span><span class="leader-distance">${Math.floor(item.distance)}m</span></div>`).join('');
 }
 
-socket.on('connect', () => {
+socket.on('connect', async () => {
   updateVoiceButton(voice.status);
   $('#server-status').innerHTML = '<i></i> SERVER ONLINE';
   $('#server-status').classList.remove('offline');
+  if (!state.room || state.playerId === socket.id || state.rejoining) return;
+  const code = state.room.code;
+  state.rejoining = true;
+  updateVoiceButton(voice.status);
+  try {
+    const rejoined = await joinRoom(code, true);
+    if (!rejoined && state.room?.code === code) {
+      leaveRoom();
+      $('#menu-error').textContent = 'Could not rejoin the squad. It may have closed; create or join another squad.';
+      show($('#menu-error'), true);
+    }
+  } finally {
+    state.rejoining = false;
+    updateVoiceButton(voice.status);
+  }
 });
 socket.on('disconnect', () => {
   voice.stop();
   updateVoiceButton(voice.status);
   $('#server-status').innerHTML = '<i></i> RECONNECTING';
   $('#server-status').classList.add('offline');
-  if (state.screen === 'playing' || state.screen === 'results') toast('CONNECTION LOST — RECONNECTING…');
+  if (state.room) toast('CONNECTION LOST — RECONNECTING…');
 });
 socket.on('connect_error', () => {
   $('#server-status').innerHTML = '<i></i> SERVER OFFLINE';
